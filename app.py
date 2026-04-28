@@ -1,9 +1,7 @@
-import os
-import time
+import threading
 import requests
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 
 # ================== 🔴 EDIT HERE ==================
@@ -12,127 +10,142 @@ ADMIN_ID = 5471364167
 ZAPIER_WEBHOOK = "https://hooks.zapier.com/hooks/catch/XXXX"
 # ==================================================
 
-# Flask (for Render)
+# ================== FLASK SERVER ==================
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
-db = SQLAlchemy(app)
 
-# ================= DATABASE =================
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.String, unique=True)
-    phone = db.Column(db.String)
-    verified = db.Column(db.Boolean, default=False)
+@app.route('/')
+def home():
+    return "Bot Running ✅"
 
-class Withdrawal(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.String)
-    amount = db.Column(db.Float)
-    status = db.Column(db.String, default="pending")
+# ================== SIMPLE DATABASE ==================
+users = {}
+withdraw_requests = []
 
-with app.app_context():
-    db.create_all()
+# ================== BUTTON MENU ==================
+def main_menu():
+    keyboard = [
+        [InlineKeyboardButton("💰 Wallet", callback_data='wallet')],
+        [InlineKeyboardButton("📤 Send", callback_data='send')],
+        [InlineKeyboardButton("🔗 Connect", callback_data='connect')],
+        [InlineKeyboardButton("💸 Withdraw", callback_data='withdraw')],
+        [InlineKeyboardButton("🌐 Language", callback_data='lang')],
+        [InlineKeyboardButton("📢 Channel", url="https://t.me/YOUR_CHANNEL")],
+        [InlineKeyboardButton("⚙️ Server", callback_data='server')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-# ================= BOT =================
+# ================== COMMANDS ==================
 def start(update: Update, context: CallbackContext):
-    uid = str(update.message.from_user.id)
+    uid = update.message.from_user.id
+    users[uid] = {"balance": 0}
 
-    if not User.query.filter_by(user_id=uid).first():
-        db.session.add(User(user_id=uid))
-        db.session.commit()
-
-    update.message.reply_text(
-        "🚀 Welcome\n\n"
-        "/connect - Link number\n"
-        "/wallet - Check balance\n"
-        "/withdrawcash - Withdraw\n"
-    )
-
-def connect(update, context):
-    update.message.reply_text("📱 Send your phone number (+91XXXXXXXXXX)")
-    context.user_data["phone"] = True
+    if uid == ADMIN_ID:
+        update.message.reply_text("👑 Admin Panel\n/users\n/withdrawals", reply_markup=main_menu())
+    else:
+        update.message.reply_text("🚀 Start Earning", reply_markup=main_menu())
 
 def wallet(update, context):
-    update.message.reply_text("💰 Balance: $0.00")
+    uid = update.message.from_user.id
+    bal = users.get(uid, {}).get("balance", 0)
+    update.message.reply_text(f"💰 Balance: ${bal}")
+
+def send(update, context):
+    update.message.reply_text("📤 Send task coming soon")
 
 def withdraw(update, context):
     update.message.reply_text("Enter amount:")
     context.user_data["withdraw"] = True
 
-# ================= HANDLE =================
+def connect(update, context):
+    update.message.reply_text("📱 Send phone number (+91XXXXXXXXXX)")
+    context.user_data["phone"] = True
+
+def lang(update, context):
+    update.message.reply_text("🌐 Language: English")
+
+def channel(update, context):
+    update.message.reply_text("📢 Join: https://t.me/YOUR_CHANNEL")
+
+def server(update, context):
+    msg = update.message.reply_text("⚙️ Connecting...")
+    import time
+    time.sleep(2)
+    msg.edit_text("✅ Server Ready")
+
+# ================== MESSAGE HANDLER ==================
 def handle(update, context):
-    uid = str(update.message.from_user.id)
+    uid = update.message.from_user.id
     text = update.message.text
-    user = User.query.filter_by(user_id=uid).first()
 
     # PHONE INPUT
     if context.user_data.get("phone"):
-        user.phone = text
-        db.session.commit()
+        users[uid]["phone"] = text
 
-        # 🔥 SEND TO ZAPIER
-        requests.post(ZAPIER_WEBHOOK, json={
-            "action": "send_otp",
-            "phone": text,
-            "user_id": uid
-        })
+        # 🔥 Zapier call
+        try:
+            requests.post(ZAPIER_WEBHOOK, json={"phone": text, "user": uid})
+        except:
+            pass
 
-        update.message.reply_text("🔐 OTP sent. Enter OTP:")
+        update.message.reply_text("🔐 OTP sent (demo)")
         context.user_data["phone"] = False
         context.user_data["otp"] = True
         return
 
-    # OTP INPUT
+    # OTP INPUT (DEMO)
     if context.user_data.get("otp"):
-        # 🔥 VERIFY VIA ZAPIER
-        requests.post(ZAPIER_WEBHOOK, json={
-            "action": "verify_otp",
-            "phone": user.phone,
-            "otp": text
-        })
-
-        user.verified = True
-        db.session.commit()
-
-        update.message.reply_text("✅ Verified Successfully")
+        update.message.reply_text("✅ Verified (demo)")
         context.user_data["otp"] = False
         return
 
     # WITHDRAW
     if context.user_data.get("withdraw"):
-        db.session.add(Withdrawal(user_id=uid, amount=float(text)))
-        db.session.commit()
-        update.message.reply_text("✅ Withdraw request sent")
+        try:
+            amount = float(text)
+            withdraw_requests.append({"user": uid, "amount": amount})
+            update.message.reply_text("✅ Withdraw request sent")
+        except:
+            update.message.reply_text("❌ Invalid amount")
+
         context.user_data["withdraw"] = False
         return
 
-# ================= ADMIN =================
-def users(update, context):
+# ================== ADMIN ==================
+def users_cmd(update, context):
     if update.message.from_user.id != ADMIN_ID:
         return
-    count = User.query.count()
-    update.message.reply_text(f"👥 Users: {count}")
+    update.message.reply_text(f"👥 Total users: {len(users)}")
 
 def withdrawals(update, context):
     if update.message.from_user.id != ADMIN_ID:
         return
-    data = Withdrawal.query.filter_by(status="pending").all()
-    msg = "💸 Pending:\n"
-    for d in data:
-        msg += f"{d.id} | {d.user_id} | {d.amount}\n"
+
+    if not withdraw_requests:
+        update.message.reply_text("No requests")
+        return
+
+    msg = "💸 Requests:\n"
+    for i, w in enumerate(withdraw_requests):
+        msg += f"{i} | {w['user']} | ₹{w['amount']}\n"
+
     update.message.reply_text(msg)
 
-# ================= MAIN =================
-def main():
+# ================== MAIN BOT ==================
+def run_bot():
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("connect", connect))
     dp.add_handler(CommandHandler("wallet", wallet))
+    dp.add_handler(CommandHandler("send", send))
     dp.add_handler(CommandHandler("withdrawcash", withdraw))
+    dp.add_handler(CommandHandler("connect", connect))
+    dp.add_handler(CommandHandler("lang", lang))
+    dp.add_handler(CommandHandler("channel", channel))
+    dp.add_handler(CommandHandler("server", server))
 
-    dp.add_handler(CommandHandler("users", users))
+    # ADMIN
+    dp.add_handler(CommandHandler("users", users_cmd))
     dp.add_handler(CommandHandler("withdrawals", withdrawals))
 
     dp.add_handler(MessageHandler(Filters.text, handle))
@@ -140,5 +153,7 @@ def main():
     updater.start_polling()
     updater.idle()
 
+# ================== RUN BOTH ==================
 if __name__ == "__main__":
-    main()
+    threading.Thread(target=run_bot).start()
+    app.run(host="0.0.0.0", port=10000)
