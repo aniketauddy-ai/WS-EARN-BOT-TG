@@ -1,1 +1,2 @@
-# WS-EARN-BOT-TG
+Telegram Bot Project
+

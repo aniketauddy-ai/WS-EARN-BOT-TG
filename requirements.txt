@@ -1,0 +1,6 @@
+python-telegram-bot==13.15
+flask
+flask_sqlalchemy
+requests
+qrcode
+pillow
